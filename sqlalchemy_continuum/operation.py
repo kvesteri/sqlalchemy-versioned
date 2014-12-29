@@ -6,13 +6,13 @@ except ImportError:
 
 import six
 import sqlalchemy as sa
-from sqlalchemy_utils import identity
-
+from sqlalchemy_utils import identity, get_primary_keys, has_changes
 
 class Operation(object):
     INSERT = 0
     UPDATE = 1
     DELETE = 2
+    STALE_VERSION = -1
 
     def __init__(self, target, type):
         self.target = target
@@ -98,7 +98,40 @@ class Operations(object):
                     del state_copy[rel_key]
 
         if state_copy:
-            self.add(Operation(target, Operation.UPDATE))
+            self._sanitize_keys(target)
+            key = self.format_key(target)
+            # if the object has already been added with an INSERT,
+            # then this is a modification within the same transaction and
+            # this is still an INSERT
+            if (target in self and
+                self[key].type == Operation.INSERT):
+                operation = Operation.INSERT
+            else:
+                operation = Operation.UPDATE
+
+            self.add(Operation(target, operation))
 
     def add_delete(self, target):
-        self.add(Operation(target, Operation.DELETE))
+        if target in self and \
+           self[self.format_key(target)].type == Operation.INSERT:
+            # if the target's existing operation is INSERT, it is being
+            # deleted within the same transaction and no version entry
+            # should be persisted
+            self.add(Operation(target, Operation.STALE_VERSION))
+        else:
+            self.add(Operation(target, Operation.DELETE))
+
+    def _sanitize_keys(self, target):
+        """The operations key for target may not be valid if this target is in
+        `self.objects` but its primary key has been modified. Check against that
+        and update the key.
+        """
+        key = self.format_key(target)
+        mapper = sa.inspect(target).mapper
+        for pk in mapper.primary_key:
+            if has_changes(target, mapper.get_property_by_column(pk).key):
+                old_key = target.__class__, sa.inspect(target).identity
+                if old_key in self.objects:
+                    # replace old key with the new one
+                    self.objects[key] = self.objects.pop(old_key)
+                break

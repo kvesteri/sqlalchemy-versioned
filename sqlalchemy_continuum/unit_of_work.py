@@ -1,8 +1,8 @@
 from copy import copy
 
 import sqlalchemy as sa
-from sqlalchemy_utils import get_primary_keys, identity
-from .operation import Operations
+from sqlalchemy_utils import get_primary_keys, identity, has_changes
+from .operation import Operations, Operation
 from .utils import (
     end_tx_column_name,
     version_class,
@@ -123,6 +123,25 @@ class UnitOfWork(object):
         session.add(self.current_transaction)
         return self.current_transaction
 
+    def _sanitize_obj_key(self, target):
+        """
+        The key for target in `self.version_objs`  may not be valid if its
+        primary key has been modified. Check against that and update the key.
+        """
+        key = self._create_key(target, identity(target))
+        mapper = sa.inspect(target).mapper
+        for pk in mapper.primary_key:
+            if has_changes(target, mapper.get_property_by_column(pk).key):
+                old_key = self._create_key(target, sa.inspect(target).identity)
+                if old_key in self.version_objs:
+                    # replace old key with the new one
+                    self.version_objs[key] = self.version_objs.pop(old_key)
+                    break
+        return key
+
+    def _create_key(self, target, pks):
+        return version_class(target.__class__), (pks, self.current_transaction.id)
+
     def get_or_create_version_object(self, target):
         """
         Return version object for given parent object. If no version object
@@ -130,12 +149,10 @@ class UnitOfWork(object):
 
         :param target: Parent object to create the version object for
         """
-        version_cls = version_class(target.__class__)
-        version_id = identity(target) + (self.current_transaction.id, )
-        version_key = (version_cls, version_id)
+        version_key = self._sanitize_obj_key(target)
 
         if version_key not in self.version_objs:
-            version_obj = version_cls()
+            version_obj = version_class(target.__class__)()
             self.version_objs[version_key] = version_obj
             self.version_session.add(version_obj)
             tx_column = self.manager.option(
@@ -151,6 +168,20 @@ class UnitOfWork(object):
         else:
             return self.version_objs[version_key]
 
+    def delete_version_object(self, target):
+        """
+        Delete version object for `target` parent object, if a version object
+        exists.
+
+        :param target: Parent object for which the version object should be
+            removed
+        """
+        version_key = self._sanitize_obj_key(target)
+        version_obj = self.version_objs.pop(version_key, None)
+        if version_obj is not None:
+            self.version_session.delete(version_obj)
+
+
     def process_operation(self, operation):
         """
         Process given operation object. The operation processing has x stages:
@@ -164,18 +195,21 @@ class UnitOfWork(object):
         :param operation: Operation object
         """
         target = operation.target
-        version_obj = self.get_or_create_version_object(target)
-        version_obj.operation_type = operation.type
-        self.assign_attributes(target, version_obj)
+        if operation.type == Operation.STALE_VERSION:
+            self.delete_version_object(target)
+        else:
+            version_obj = self.get_or_create_version_object(target)
+            version_obj.operation_type = operation.type
+            self.assign_attributes(target, version_obj)
 
-        self.manager.plugins.after_create_version_object(
-            self, target, version_obj
-        )
-        if self.manager.option(target, 'strategy') == 'validity':
-            self.update_version_validity(
-                target,
-                version_obj
+            self.manager.plugins.after_create_version_object(
+                self, target, version_obj
             )
+            if self.manager.option(target, 'strategy') == 'validity':
+                self.update_version_validity(
+                    target,
+                    version_obj
+                )
         operation.processed = True
 
     def create_version_objects(self, session):
