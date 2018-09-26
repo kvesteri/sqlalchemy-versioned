@@ -1,70 +1,18 @@
 import sqlalchemy as sa
+from sqlalchemy_utils import get_column_key
 
 
-class TableBuilder(object):
-    """
-    TableBuilder handles the building of version tables based on parent
-    table's structure and versioning configuration options.
-    """
-    def __init__(
-        self,
-        versioning_manager,
-        parent_table,
-        model=None
-    ):
-        self.manager = versioning_manager
+class ColumnReflector(object):
+    def __init__(self, manager, parent_table, model=None):
         self.parent_table = parent_table
         self.model = model
+        self.manager = manager
 
     def option(self, name):
         try:
             return self.manager.option(self.model, name)
         except TypeError:
             return self.manager.options[name]
-
-    @property
-    def table_name(self):
-        """
-        Returns the version table name for current parent table.
-        """
-        return self.option('table_name') % self.parent_table.name
-
-    @property
-    def parent_columns(self):
-        for column in self.parent_table.c:
-            if (
-                self.model and
-                self.manager.is_excluded_column(self.model, column)
-            ):
-                continue
-            if not self.model and column in self.manager.options['exclude']:
-                continue
-            yield column
-
-    @property
-    def reflected_columns(self):
-        """
-        Returns reflected parent table columns.
-
-        All columns from parent table are reflected except those that:
-        1. Are auto assigned date or datetime columns. Use include option
-        parameter if you wish to have these included.
-        2. Columns that are part of exclude option parameter.
-        """
-        columns = []
-
-        transaction_column_name = self.option('transaction_column_name')
-
-        for column in self.parent_columns:
-            column_copy = self.reflect_column(column)
-            columns.append(column_copy)
-
-        # When using join table inheritance each table should have own
-        # transaction column.
-        if transaction_column_name not in [c.key for c in columns]:
-            columns.append(sa.Column(transaction_column_name, sa.BigInteger))
-
-        return columns
 
     def reflect_column(self, column):
         """
@@ -134,24 +82,89 @@ class TableBuilder(object):
         )
 
     @property
+    def reflected_parent_columns(self):
+        for column in self.parent_table.c:
+            if (
+                    self.model and
+                    self.manager.is_excluded_column(self.model, column)
+            ):
+                continue
+            reflected_column = self.reflect_column(column)
+            yield reflected_column
+
+    def __iter__(self):
+        for column in self.reflected_parent_columns:
+            yield column
+
+        # Only yield internal version columns if parent model is not using
+        # single table inheritance
+        if not self.model or not sa.inspect(self.model).single:
+            yield self.transaction_column
+            if self.option('strategy') == 'validity':
+                yield self.end_transaction_column
+            yield self.operation_type_column
+
+
+class TableBuilder(object):
+    """
+    TableBuilder handles the building of version tables based on parent
+    table's structure and versioning configuration options.
+    """
+
+    def __init__(
+            self,
+            versioning_manager,
+            parent_table,
+            model=None
+    ):
+        self.manager = versioning_manager
+        self.parent_table = parent_table
+        self.model = model
+
+    def option(self, name):
+        try:
+            return self.manager.option(self.model, name)
+        except (TypeError, KeyError):
+            try:
+                return self.manager.options[name]
+            except KeyError:
+                return None
+
+    @property
+    def table_name(self):
+        """
+        Returns the version table name for current parent table.
+        """
+        table_name = self.option('table_name') % self.parent_table if '%s' in self.option(
+            'table_name') else self.option(
+            'table_name')
+        if '.' in table_name:
+            table_name = table_name.split('.')[-1]
+
+        return table_name
+
+    @property
     def columns(self):
-        data = self.reflected_columns
-        data.append(self.transaction_column)
-        if self.option('strategy') == 'validity':
-            data.append(self.end_transaction_column)
-        data.append(self.operation_type_column)
-        return data
+        return list(
+            column for column in
+            ColumnReflector(self.manager, self.parent_table, self.model)
+        )
 
     def __call__(self, extends=None):
         """
         Builds version table.
         """
         columns = self.columns if extends is None else []
-
         self.manager.plugins.after_build_version_table_columns(self, columns)
+        schema = self.parent_table.schema
+        if self.option('schema_name'):
+            schema = self.option('schema_name')
+        elif self.option('versions_tables_schema_name'):
+            schema = self.option('versions_tables_schema_name')
         return sa.schema.Table(
             extends.name if extends is not None else self.table_name,
             self.parent_table.metadata,
             *columns,
+            schema=schema,
             extend_existing=extends is not None
         )

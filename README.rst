@@ -16,6 +16,7 @@ Features
 - Transactions can be queried afterwards using SQLAlchemy query syntax
 - Query for changed records at given transaction
 - Temporal relationship reflection. Version object's relationship show the parent objects relationships as they where in that point in time.
+- Supports native versioning for PostgreSQL database (trigger based versioning)
 
 
 QuickStart
@@ -40,7 +41,7 @@ In order to make your models versioned you need two things:
     from sqlalchemy_continuum import make_versioned
 
 
-    make_versioned()
+    make_versioned(user_cls=None)
 
 
     class Article(Base):
@@ -77,7 +78,7 @@ In order to make your models versioned you need two things:
 Resources
 ---------
 
-- `Documentation <http://sqlalchemy-continuum.readthedocs.org/>`_
+- `Documentation <https://sqlalchemy-continuum.readthedocs.io/>`_
 - `Issue Tracker <http://github.com/kvesteri/sqlalchemy-continuum/issues>`_
 - `Code <http://github.com/kvesteri/sqlalchemy-continuum/>`_
 
@@ -87,7 +88,20 @@ Resources
 
 .. |Build Status| image:: https://travis-ci.org/kvesteri/sqlalchemy-continuum.png?branch=master
    :target: https://travis-ci.org/kvesteri/sqlalchemy-continuum
-.. |Version Status| image:: https://pypip.in/v/SQLAlchemy-Continuum/badge.png
-   :target: https://crate.io/packages/SQLAlchemy-Continuum/
-.. |Downloads| image:: https://pypip.in/d/SQLAlchemy-Continuum/badge.png
-   :target: https://crate.io/packages/SQLAlchemy-Continuum/
+.. |Version Status| image:: https://img.shields.io/pypi/v/SQLAlchemy-Continuum.png
+   :target: https://pypi.python.org/pypi/SQLAlchemy-Continuum/
+.. |Downloads| image:: https://img.shields.io/pypi/dm/SQLAlchemy-Continuum.png
+   :target: https://pypi.python.org/pypi/SQLAlchemy-Continuum/
+
+
+More information
+----------------
+
+- http://en.wikipedia.org/wiki/Slowly_changing_dimension
+- http://en.wikipedia.org/wiki/Change_data_capture
+- http://en.wikipedia.org/wiki/Anchor_Modeling
+- http://en.wikipedia.org/wiki/Shadow_table
+- https://wiki.postgresql.org/wiki/Audit_trigger
+- https://wiki.postgresql.org/wiki/Audit_trigger_91plus
+- http://kosalads.blogspot.fi/2014/06/implement-audit-functionality-in.html
+- https://github.com/2ndQuadrant/pgaudit

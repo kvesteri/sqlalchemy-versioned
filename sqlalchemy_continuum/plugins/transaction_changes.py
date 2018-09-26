@@ -94,22 +94,4 @@ class TransactionChangesPlugin(Plugin):
         self.clear()
 
     def after_version_class_built(self, parent_cls, version_cls):
-        transaction_column = getattr(
-            version_cls,
-            option(parent_cls, 'transaction_column_name')
-        )
-
-        # Only define changes relation if it doesn't already exist in
-        # parent class.
-        if not hasattr(version_cls, 'changes'):
-            version_cls.changes = sa.orm.relationship(
-                self.model_class,
-                primaryjoin=(
-                    self.model_class.transaction_id == transaction_column
-                ),
-                foreign_keys=[self.model_class.transaction_id],
-                backref=option(parent_cls, 'relation_naming_function')(
-                    parent_cls.__name__
-                )
-            )
         parent_cls.__versioned__['transaction_changes'] = self.model_class

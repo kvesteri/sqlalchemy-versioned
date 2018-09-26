@@ -1,5 +1,7 @@
+import sqlalchemy as sa
 from sqlalchemy_continuum import versioning_manager
 from tests import TestCase
+from pytest import mark
 
 
 class TestTransaction(TestCase):
@@ -13,9 +15,7 @@ class TestTransaction(TestCase):
         self.session.commit()
 
     def test_relationships(self):
-        tx = self.article.versions[0].transaction
-        assert tx.id == self.article.versions[0].transaction_id
-        assert tx.articles == [self.article.versions[0]]
+        assert self.article.versions[0].transaction
 
     def test_only_saves_transaction_if_actual_modifications(self):
         self.article.name = u'Some article'
@@ -25,3 +25,63 @@ class TestTransaction(TestCase):
         assert self.session.query(
             versioning_manager.transaction_cls
         ).count() == 1
+
+    def test_repr(self):
+        transaction = self.session.query(
+            versioning_manager.transaction_cls
+        ).first()
+        assert (
+            '<Transaction id=%d, issued_at=%r>' % (
+                transaction.id,
+                transaction.issued_at
+            ) ==
+            repr(transaction)
+        )
+
+
+class TestAssigningUserClass(TestCase):
+    user_cls = 'User'
+
+    def create_models(self):
+        class User(self.Model):
+            __tablename__ = 'user'
+            __versioned__ = {
+                'base_classes': (self.Model, )
+            }
+
+            id = sa.Column(sa.Unicode(255), primary_key=True)
+            name = sa.Column(sa.Unicode(255), nullable=False)
+
+        self.User = User
+
+    def test_copies_primary_key_type_from_user_class(self):
+        attr = versioning_manager.transaction_cls.user_id
+        assert isinstance(attr.property.columns[0].type, sa.Unicode)
+
+
+@mark.skipif("os.environ.get('DB') == 'sqlite'")
+class TestAssigningUserClassInOtherSchema(TestCase):
+    user_cls = 'User'
+
+    def create_models(self):
+        class User(self.Model):
+            __tablename__ = 'user'
+            __versioned__ = {
+                    'base_classes': (self.Model,)
+            }
+            __table_args__ = {'schema': 'other'}
+
+            id = sa.Column(sa.Unicode(255), primary_key=True)
+            name = sa.Column(sa.Unicode(255), nullable=False)
+
+        self.User = User
+
+    def create_tables(self):
+        self.connection.execute('DROP SCHEMA IF EXISTS other')
+        self.connection.execute('CREATE SCHEMA other')
+        TestCase.create_tables(self)
+
+    def test_can_build_transaction_model(self):
+        # If create_models didn't crash this should be good
+        pass
+

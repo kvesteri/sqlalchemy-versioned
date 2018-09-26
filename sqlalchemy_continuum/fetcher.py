@@ -1,19 +1,26 @@
 import operator
 import sqlalchemy as sa
-from sqlalchemy_utils import primary_keys, identity
+from sqlalchemy_utils import get_primary_keys, identity
 from .utils import tx_column_name, end_tx_column_name
-
-
-def eq(tuple_):
-    return tuple_[0] == tuple_[1]
 
 
 def parent_identity(obj_or_class):
     return tuple(
-        getattr(obj_or_class, column.name)
-        for column in primary_keys(obj_or_class)
-        if column.name != tx_column_name(obj_or_class)
+        getattr(obj_or_class, column_key)
+        for column_key in get_primary_keys(obj_or_class).keys()
+        if column_key != tx_column_name(obj_or_class)
     )
+
+
+def eqmap(callback, iterable):
+    for a, b in zip(*map(callback, iterable)):
+        yield a == b
+
+
+def parent_criteria(obj, class_=None):
+    if class_ is None:
+        class_ = obj.__class__
+    return eqmap(parent_identity, (class_, obj))
 
 
 class VersionObjectFetcher(object):
@@ -43,16 +50,7 @@ class VersionObjectFetcher(object):
         """
         return self.next_query(obj).first()
 
-    def parent_identity_correlation(self, obj):
-        return map(
-            eq,
-            zip(
-                parent_identity(obj.__class__),
-                parent_identity(obj)
-            )
-        )
-
-    def _transaction_id_subquery(self, obj, next_or_prev='next'):
+    def _transaction_id_subquery(self, obj, next_or_prev='next', alias=None):
         if next_or_prev == 'next':
             op = operator.gt
             func = sa.func.min
@@ -60,24 +58,37 @@ class VersionObjectFetcher(object):
             op = operator.lt
             func = sa.func.max
 
-        alias = sa.orm.aliased(obj)
+        if alias is None:
+            alias = sa.orm.aliased(obj)
+            table = alias.__table__
+            if hasattr(alias, 'c'):
+                attrs = alias.c
+            else:
+                attrs = alias
+        else:
+            table = alias.original
+            attrs = alias.c
         query = (
             sa.select(
                 [func(
-                    getattr(alias, tx_column_name(obj))
+                    getattr(attrs, tx_column_name(obj))
                 )],
-                from_obj=[alias.__table__]
+                from_obj=[table]
             )
             .where(
                 sa.and_(
                     op(
-                        getattr(alias, tx_column_name(obj)),
+                        getattr(attrs, tx_column_name(obj)),
                         getattr(obj, tx_column_name(obj))
                     ),
-                    *map(eq, zip(parent_identity(alias), parent_identity(obj)))
+                    *[
+                        getattr(attrs, pk) == getattr(obj, pk)
+                        for pk in get_primary_keys(obj.__class__)
+                        if pk != tx_column_name(obj)
+                    ]
                 )
             )
-            .correlate(alias.__table__)
+            .correlate(table)
         )
         return query
 
@@ -96,7 +107,7 @@ class VersionObjectFetcher(object):
                     self._transaction_id_subquery(
                         obj, next_or_prev=next_or_prev
                     ),
-                    *self.parent_identity_correlation(obj)
+                    *parent_criteria(obj)
                 )
             )
         )
@@ -121,9 +132,7 @@ class VersionObjectFetcher(object):
         query = (
             sa.select([subquery], from_obj=[obj.__table__])
             .where(
-                sa.and_(
-                    *map(eq, zip(identity(obj.__class__), identity(obj)))
-                )
+                sa.and_(*eqmap(identity, (obj.__class__, obj)))
             )
             .order_by(
                 getattr(obj.__class__, tx_column_name(obj))
@@ -163,7 +172,7 @@ class ValidityFetcher(VersionObjectFetcher):
                     getattr(obj.__class__, tx_column_name(obj))
                     ==
                     getattr(obj, end_tx_column_name(obj)),
-                    *self.parent_identity_correlation(obj)
+                    *parent_criteria(obj)
                 )
             )
         )
@@ -182,7 +191,7 @@ class ValidityFetcher(VersionObjectFetcher):
                     getattr(obj.__class__, end_tx_column_name(obj))
                     ==
                     getattr(obj, tx_column_name(obj)),
-                    *self.parent_identity_correlation(obj)
+                    *parent_criteria(obj)
                 )
             )
         )

@@ -8,9 +8,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy_continuum import (
+    ClassNotVersioned,
     version_class,
     make_versioned,
     versioning_manager,
+    remove_versioning
 )
 from sqlalchemy_continuum.transaction import TransactionFactory
 from sqlalchemy_continuum.plugins import (
@@ -19,9 +21,6 @@ from sqlalchemy_continuum.plugins import (
 )
 
 warnings.simplefilter('error', sa.exc.SAWarning)
-
-
-make_versioned(options={'strategy': 'subquery'})
 
 
 class QueryPool(object):
@@ -40,58 +39,80 @@ def log_sql(
     QueryPool.queries.append(statement)
 
 
+def get_dns_from_driver(driver):
+    if driver == 'postgres':
+        return 'postgres://postgres@localhost/sqlalchemy_continuum_test'
+    elif driver == 'mysql':
+        return 'mysql+pymysql://travis@localhost/sqlalchemy_continuum_test'
+    elif driver == 'sqlite':
+        return 'sqlite:///:memory:'
+    else:
+        raise Exception('Unknown driver given: %r' % driver)
+
+
+def get_driver_name(driver):
+    return driver[0:-len('-native')] if driver.endswith('-native') else driver
+
+
+def uses_native_versioning():
+    return os.environ.get('DB', 'sqlite').endswith('-native')
+
+
 class TestCase(object):
     versioning_strategy = 'subquery'
     transaction_column_name = 'transaction_id'
     end_transaction_column_name = 'end_transaction_id'
     composite_pk = False
     plugins = [TransactionChangesPlugin(), TransactionMetaPlugin()]
-    transaction_cls = TransactionFactory(user=False)
+    transaction_cls = TransactionFactory()
+    user_cls = None
+    should_create_models = True
 
     @property
     def options(self):
         return {
+            'create_models': self.should_create_models,
+            'native_versioning': uses_native_versioning(),
             'base_classes': (self.Model, ),
             'strategy': self.versioning_strategy,
             'transaction_column_name': self.transaction_column_name,
             'end_transaction_column_name': self.end_transaction_column_name,
         }
 
-    def get_dns_from_driver(self, driver):
-        if driver == 'postgres':
-            return 'postgres://postgres@localhost/sqlalchemy_continuum_test'
-        elif driver == 'mysql':
-            return 'mysql+pymysql://travis@localhost/sqlalchemy_continuum_test'
-        elif driver == 'sqlite':
-            return 'sqlite:///:memory:'
-        else:
-            raise Exception('Unknown driver given: %r' % driver)
-
     def setup_method(self, method):
+        self.Model = declarative_base()
+        make_versioned(options=self.options)
+
         driver = os.environ.get('DB', 'sqlite')
+        self.driver = get_driver_name(driver)
         versioning_manager.plugins = self.plugins
         versioning_manager.transaction_cls = self.transaction_cls
+        versioning_manager.user_cls = self.user_cls
 
-        self.engine = create_engine(self.get_dns_from_driver(driver))
+        self.engine = create_engine(get_dns_from_driver(self.driver))
         # self.engine.echo = True
-        self.connection = self.engine.connect()
-        self.Model = declarative_base()
-
         self.create_models()
 
         sa.orm.configure_mappers()
 
+        self.connection = self.engine.connect()
+
         if hasattr(self, 'Article'):
-            self.ArticleVersion = version_class(self.Article)
+            try:
+                self.ArticleVersion = version_class(self.Article)
+            except ClassNotVersioned:
+                pass
         if hasattr(self, 'Tag'):
             try:
                 self.TagVersion = version_class(self.Tag)
-            except (AttributeError, KeyError):
+            except ClassNotVersioned:
                 pass
         self.create_tables()
 
         Session = sessionmaker(bind=self.connection)
-        self.session = Session()
+        self.session = Session(autoflush=False)
+        if driver == 'postgres-native':
+            self.session.execute('CREATE EXTENSION IF NOT EXISTS hstore')
 
     def create_tables(self):
         self.Model.metadata.create_all(self.connection)
@@ -100,6 +121,11 @@ class TestCase(object):
         self.Model.metadata.drop_all(self.connection)
 
     def teardown_method(self, method):
+        self.session.rollback()
+        uow_leaks = versioning_manager.units_of_work
+        session_map_leaks = versioning_manager.session_connection_map
+
+        remove_versioning()
         QueryPool.queries = []
         versioning_manager.reset()
 
@@ -108,6 +134,9 @@ class TestCase(object):
         self.drop_tables()
         self.engine.dispose()
         self.connection.close()
+
+        assert not uow_leaks
+        assert not session_map_leaks
 
     def create_models(self):
         class Article(self.Model):
@@ -133,9 +162,18 @@ class TestCase(object):
 
 
 setting_variants = {
-    'versioning_strategy': ['subquery', 'validity'],
-    'transaction_column_name': ['transaction_id', 'tx_id'],
-    'end_transaction_column_name': ['end_transaction_id', 'end_tx_id']
+    'versioning_strategy': [
+        'subquery',
+        'validity',
+    ],
+    'transaction_column_name': [
+        'transaction_id',
+        'tx_id'
+    ],
+    'end_transaction_column_name': [
+        'end_transaction_id',
+        'end_tx_id'
+    ]
 }
 
 

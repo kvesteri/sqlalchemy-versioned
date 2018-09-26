@@ -1,7 +1,7 @@
 from copy import copy
 
 import sqlalchemy as sa
-from sqlalchemy_utils import identity
+from sqlalchemy_utils import get_primary_keys, identity
 from .operation import Operations
 from .utils import (
     end_tx_column_name,
@@ -17,7 +17,7 @@ class UnitOfWork(object):
         self.manager = manager
         self.reset()
 
-    def reset(self):
+    def reset(self, session=None):
         """
         Reset the internal state of this UnitOfWork object. Normally this is
         called after transaction has been committed or rolled back.
@@ -43,6 +43,19 @@ class UnitOfWork(object):
         )
 
     def process_before_flush(self, session):
+        """
+        Before flush processor for given session.
+
+        This method creates a version session which is later on used for the
+        creation of version objects. It also creates Transaction object for the
+        current transaction and invokes before_flush template method on all
+        plugins.
+
+        If the given session had no relevant modifications regarding versioned
+        objects this method does nothing.
+
+        :param session: SQLAlchemy session object
+        """
         if session == self.version_session:
             return
 
@@ -74,7 +87,18 @@ class UnitOfWork(object):
         if not self.current_transaction:
             return
 
+        if not self.version_session:
+            self.version_session = sa.orm.session.Session(
+                bind=session.connection()
+            )
+
         self.make_versions(session)
+
+    def transaction_args(self, session):
+        args = {}
+        for plugin in self.manager.plugins:
+            args.update(plugin.transaction_args(self, session))
+        return args
 
     def create_transaction(self, session):
         """
@@ -82,11 +106,21 @@ class UnitOfWork(object):
 
         :param session: SQLAlchemy session object
         """
-        self.current_transaction = self.manager.transaction_cls()
-        self.manager.plugins.before_create_tx_object(self, session)
-        session.add(self.current_transaction)
-        self.manager.plugins.after_create_tx_object(self, session)
+        args = self.transaction_args(session)
 
+        Transaction = self.manager.transaction_cls
+        self.current_transaction = Transaction()
+
+        for key, value in args.items():
+            setattr(self.current_transaction, key, value)
+        if not self.version_session:
+            self.version_session = sa.orm.session.Session(
+                bind=session.connection()
+            )
+        self.version_session.add(self.current_transaction)
+        self.version_session.flush()
+        self.version_session.expunge(self.current_transaction)
+        session.add(self.current_transaction)
         return self.current_transaction
 
     def get_or_create_version_object(self, target):
@@ -151,7 +185,10 @@ class UnitOfWork(object):
 
         :param session: SQLAlchemy session object
         """
-        if not self.manager.options['versioning']:
+        if (
+            not self.manager.options['versioning'] or
+            self.manager.options['native_versioning']
+        ):
             return
 
         for key, operation in copy(self.operations).items():
@@ -166,7 +203,7 @@ class UnitOfWork(object):
 
         self.version_session.flush()
 
-    def version_validity_subquery(self, parent, version_obj):
+    def version_validity_subquery(self, parent, version_obj, alias=None):
         """
         Return the subquery needed by :func:`update_version_validity`.
 
@@ -181,11 +218,13 @@ class UnitOfWork(object):
         session = sa.orm.object_session(version_obj)
 
         subquery = fetcher._transaction_id_subquery(
-            version_obj, next_or_prev='prev'
+            version_obj,
+            next_or_prev='prev',
+            alias=alias
         )
         if session.connection().engine.dialect.name == 'mysql':
             return sa.select(
-                ['max_1'],
+                [sa.text('max_1')],
                 from_obj=[
                     sa.sql.expression.alias(subquery, name='subquery')
                 ]
@@ -204,29 +243,40 @@ class UnitOfWork(object):
 
         .. seealso:: :func:`version_validity_subquery`
         """
-        fetcher = self.manager.fetcher(parent)
         session = sa.orm.object_session(version_obj)
 
-        subquery = self.version_validity_subquery(parent, version_obj)
-        query = (
-            session.query(version_obj.__class__)
-            .filter(
-                sa.and_(
-                    getattr(
-                        version_obj.__class__,
-                        tx_column_name(version_obj)
-                    ) == subquery,
-                    *fetcher.parent_identity_correlation(version_obj)
+        for class_ in version_obj.__class__.__mro__:
+            if class_ in self.manager.parent_class_map:
+
+                subquery = self.version_validity_subquery(
+                    parent,
+                    version_obj,
+                    alias=sa.orm.aliased(class_.__table__)
                 )
-            )
-        )
-        query.update(
-            {
-                end_tx_column_name(version_obj):
-                self.current_transaction.id
-            },
-            synchronize_session=False
-        )
+                query = (
+                    session.query(class_.__table__)
+                    .filter(
+                        sa.and_(
+                            getattr(
+                                class_,
+                                tx_column_name(version_obj)
+                            ) == subquery,
+                            *[
+                                getattr(version_obj, pk) ==
+                                getattr(class_.__table__.c, pk)
+                                for pk in get_primary_keys(class_)
+                                if pk != tx_column_name(class_)
+                            ]
+                        )
+                    )
+                )
+                query.update(
+                    {
+                        end_tx_column_name(version_obj):
+                        self.current_transaction.id
+                    },
+                    synchronize_session=False
+                )
 
     def create_association_versions(self, session):
         """
@@ -236,7 +286,12 @@ class UnitOfWork(object):
         """
         statements = copy(self.pending_statements)
         for stmt in statements:
-            stmt = stmt.values(transaction_id=self.current_transaction.id)
+            stmt = stmt.values(
+                **{
+                    self.manager.options['transaction_column_name']:
+                    self.current_transaction.id
+                }
+            )
             session.execute(stmt)
         self.pending_statements = []
 
@@ -274,5 +329,8 @@ class UnitOfWork(object):
             Version object to assign the attribute values to
         """
         for prop in versioned_column_properties(parent_obj):
-            value = getattr(parent_obj, prop.key)
+            try:
+                value = getattr(parent_obj, prop.key)
+            except sa.orm.exc.ObjectDeletedError:
+                value = None
             setattr(version_obj, prop.key, value)

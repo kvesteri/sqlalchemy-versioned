@@ -1,12 +1,17 @@
+from itertools import chain
 from inspect import isclass
 from collections import defaultdict
+
 import sqlalchemy as sa
-from sqlalchemy.orm import object_session
 from sqlalchemy.orm.attributes import get_history
-from sqlalchemy.orm.exc import UnmappedInstanceError
-from sqlalchemy.orm.properties import ColumnProperty
 from sqlalchemy.orm.util import AliasedClass
-from sqlalchemy_utils.functions import naturally_equivalent, identity
+from sqlalchemy_utils.functions import (
+    get_primary_keys,
+    identity,
+    naturally_equivalent,
+)
+
+from .exc import ClassNotVersioned
 
 
 def get_versioning_manager(obj_or_class):
@@ -19,10 +24,20 @@ def get_versioning_manager(obj_or_class):
     if isinstance(obj_or_class, AliasedClass):
         obj_or_class = sa.inspect(obj_or_class).mapper.class_
     cls = obj_or_class if isclass(obj_or_class) else obj_or_class.__class__
-    return cls.__versioning_manager__
+    try:
+        return cls.__versioning_manager__
+    except AttributeError:
+        raise ClassNotVersioned(cls.__name__)
 
 
 def option(obj_or_class, option_name):
+    """
+    Return the option value of given option for given versioned object or
+    class.
+
+    :param obj_or_class: SQLAlchemy declarative model object or class
+    :param option_name: The name of an option to return
+    """
     if isinstance(obj_or_class, AliasedClass):
         obj_or_class = sa.inspect(obj_or_class).mapper.class_
     cls = obj_or_class if isclass(obj_or_class) else obj_or_class.__class__
@@ -46,23 +61,6 @@ def end_tx_attr(obj):
         obj.__class__,
         end_tx_column_name(obj)
     )
-
-
-def get_bind(obj):
-    if hasattr(obj, 'bind'):
-        conn = obj.bind
-    else:
-        try:
-            conn = object_session(obj).bind
-        except UnmappedInstanceError:
-            conn = obj
-
-    if not isinstance(conn, sa.engine.base.Connection):
-        raise TypeError(
-            'This method accepts only Session, Connection and declarative '
-            'model objects.'
-        )
-    return conn
 
 
 def parent_class(version_cls):
@@ -122,7 +120,11 @@ def version_class(model):
 
     .. seealso:: :func:`parent_class`
     """
-    return get_versioning_manager(model).version_class_map[model]
+    manager = get_versioning_manager(model)
+    try:
+        return manager.version_class_map[model]
+    except KeyError:
+        return model
 
 
 def version_table(table):
@@ -131,7 +133,11 @@ def version_table(table):
 
     :param table: SQLAlchemy Table object
     """
-    if table.metadata.schema:
+    if table.schema:
+        return table.metadata.tables[
+            table.schema + '.' + table.name + '_version'
+        ]
+    elif table.metadata.schema:
         return table.metadata.tables[
             table.metadata.schema + '.' + table.name + '_version'
         ]
@@ -180,7 +186,7 @@ def is_versioned(obj_or_class):
                 obj_or_class, 'versioning'
             )
         )
-    except (AttributeError, KeyError):
+    except ClassNotVersioned:
         return False
 
 
@@ -195,14 +201,13 @@ def versioned_column_properties(obj_or_class):
 
     cls = obj_or_class if isclass(obj_or_class) else obj_or_class.__class__
 
-    for prop in sa.inspect(cls).attrs.values():
-        if not isinstance(prop, ColumnProperty):
-            continue
-        if not manager.is_excluded_column(obj_or_class, prop.columns[0]):
-            yield prop
+    mapper = sa.inspect(cls)
+    for key in mapper.columns.keys():
+        if not manager.is_excluded_property(obj_or_class, key):
+            yield getattr(mapper.attrs, key)
 
 
-def versioned_relationships(obj):
+def versioned_relationships(obj, versioned_column_keys):
     """
     Return all versioned relationships for given versioned SQLAlchemy
     declarative model object.
@@ -210,11 +215,11 @@ def versioned_relationships(obj):
     :param obj: SQLAlchemy declarative model object
     """
     for prop in sa.inspect(obj.__class__).relationships:
-        if is_versioned(prop.mapper.class_):
+        if any(c.key in versioned_column_keys for c in prop.local_columns):
             yield prop
 
 
-def vacuum(session, model):
+def vacuum(session, model, yield_per=1000):
     """
     When making structural changes to version tables (for example dropping
     columns) there are sometimes situations where some old version records
@@ -235,6 +240,7 @@ def vacuum(session, model):
 
     :param session: SQLAlchemy session object
     :param model: SQLAlchemy declarative model class
+    :param yield_per: how many rows to process at a time
     """
     version_cls = version_class(model)
     versions = defaultdict(list)
@@ -242,15 +248,18 @@ def vacuum(session, model):
     query = (
         session.query(version_cls)
         .order_by(option(version_cls, 'transaction_column_name'))
-    )
+    ).yield_per(yield_per)
+
+    primary_key_col = sa.inspection.inspect(model).primary_key[0].name
 
     for version in query:
-        if versions[version.id]:
-            prev_version = versions[version.id][-1]
+        version_id = getattr(version, primary_key_col)
+        if versions[version_id]:
+            prev_version = versions[version_id][-1]
             if naturally_equivalent(prev_version, version):
                 session.delete(version)
         else:
-            versions[version.id].append(version)
+            versions[version_id].append(version)
 
 
 def is_internal_column(model, column_name):
@@ -277,7 +286,10 @@ def is_modified_or_deleted(obj):
     :param obj: SQLAlchemy declarative model object
     """
     session = sa.orm.object_session(obj)
-    return is_modified(obj) or obj in session.deleted
+    return is_versioned(obj) and (
+        is_modified(obj) or
+        obj in chain(session.deleted, session.new)
+    )
 
 
 def is_modified(obj):
@@ -306,7 +318,8 @@ def is_modified(obj):
         prop.key for prop in versioned_column_properties(obj)
     ]
     versioned_relationship_keys = [
-        prop.key for prop in versioned_relationships(obj)
+        prop.key
+        for prop in versioned_relationships(obj, versioned_column_keys)
     ]
     for key, attr in sa.inspect(obj).attrs.items():
         if key in column_names:
@@ -333,6 +346,43 @@ def is_session_modified(session):
     return any(
         is_modified_or_deleted(obj) for obj in versioned_objects(session)
     )
+
+
+def count_versions(obj):
+    """
+    Return the number of versions given object has. This function works even
+    when obj has `create_models` and `create_tables` versioned settings
+    disabled.
+
+    ::
+
+        article = Article(name=u'Some article')
+
+        count_versions(article)  # 0
+
+        session.add(article)
+        session.commit()
+
+        count_versions(article)  # 1
+
+
+    :param obj: SQLAlchemy declarative model object
+    """
+    session = sa.orm.object_session(obj)
+    if session is None:
+        # If object is transient, we assume it has no version history.
+        return 0
+    manager = get_versioning_manager(obj)
+    table_name = manager.option(obj, 'table_name') % obj.__table__.name
+    criteria = [
+        '%s = %r' % (pk, getattr(obj, pk))
+        for pk in get_primary_keys(obj)
+    ]
+    query = 'SELECT COUNT(1) FROM %s WHERE %s' % (
+        table_name,
+        ' AND '.join(criteria)
+    )
+    return session.execute(query).scalar()
 
 
 def changeset(obj):
@@ -371,3 +421,15 @@ def changeset(obj):
                 if new_value:
                     data[prop.key] = [new_value, old_value]
     return data
+
+
+
+class VersioningClauseAdapter(sa.sql.visitors.ReplacingCloningVisitor):
+    def replace(self, col):
+        if isinstance(col, sa.Column):
+            table = version_table(col.table)
+            return table.c.get(col.key)
+
+
+def adapt_columns(expr):
+    return VersioningClauseAdapter().traverse(expr)

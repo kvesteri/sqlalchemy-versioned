@@ -3,8 +3,210 @@ Changelog
 
 Here you can see the full list of changes between each SQLAlchemy-Continuum release.
 
-1.0-b1 (2014-03-14)
+
+1.3.6 (2018-07-30)
+^^^^^^^^^^^^^^^^^^
+
+- Fixed ResourceClosedErrors from connections leaking when using an external transaction (#196, courtesy of vault)
+
+
+1.3.5 (2018-06-03)
+^^^^^^^^^^^^^^^^^^
+
+- Track cloned connections (#167, courtesy of netcriptus)
+
+
+1.3.4 (2018-03-07)
+^^^^^^^^^^^^^^^^^^
+
+- Exclude many-to-many properties from versioning if they are added in exclude parameter (#169, courtesy of fuhrysteve)
+
+
+1.3.3 (2017-11-05)
+^^^^^^^^^^^^^^^^^^
+
+- Fixed changeset when updating object in same transaction as inserting it (#141, courtesy of oinopion)
+
+
+1.3.2 (2017-10-12)
+^^^^^^^^^^^^^^^^^^
+
+- Fixed multiple schema handling (#132, courtesy of vault)
+
+
+1.3.1 (2017-06-28)
+^^^^^^^^^^^^^^^^^^
+
+- Fixed subclass retrieval for closest_matching_table (#163, courtesy of debonzi)
+
+
+1.3.0 (2017-01-30)
+^^^^^^^^^^^^^^^^^^
+
+- Dropped py2.6 support
+- Fixed memory leaks with UnitOfWork instances (#131, courtesy of quantus)
+
+
+1.2.4 (2016-01-10)
+^^^^^^^^^^^^^^^^^^
+
+- Added explicit sequence names for Oracle (#118, courtesy of apfeiffer1)
+
+
+1.2.3 (2016-01-10)
+^^^^^^^^^^^^^^^^^^
+
+- Added use_module_name configuration option (#119, courtesy of kyheo)
+
+
+1.2.2 (2015-12-08)
+^^^^^^^^^^^^^^^^^^
+
+- Fixed some relationship changes not counted as modifications (#116, courtesy of tvuotila)
+
+
+1.2.1 (2015-09-27)
+^^^^^^^^^^^^^^^^^^
+
+- Fixed deep joined table inheritance handling (#105, courtesy of piotr-dobrogost)
+- Fixed naive assumption of related User model always having id column (#107, courtesy of avilaton)
+- Fixed one-to-many relationship reverting (#102, courtesy of sdorazio)
+
+
+1.2.0 (2015-07-31)
+^^^^^^^^^^^^^^^^^^
+
+- Removed generated changes attribute from version classes. This attribute can be accessed through `transaction.changes`
+- Removed is_modified checking from insert operations
+
+
+1.1.5 (2014-12-28)
+^^^^^^^^^^^^^^^^^^
+
+- Added smart primary key type inspection for user class (#86, courtesy of mattupstate)
+- Added support for self-referential version relationship reflection (#88, courtesy of dtheodor)
+
+
+1.1.4 (2014-12-06)
+^^^^^^^^^^^^^^^^^^
+
+- Fixed One-To-Many version relationship handling (#82, courtesy of dtheodor)
+- Fixed Many-To-Many version relationship handling (#83, courtesy of dtheodor)
+- Fixed inclusion and exclusion of aliased columns
+- Removed automatic exclusion of auto-assigned datetime columns and tsvector columns (explicit is better than implicit)
+
+
+1.1.3 (2014-10-23)
+^^^^^^^^^^^^^^^^^^
+
+- Made FlaskPlugin accepts overriding of current_user_id_factory and remote_addr_factory
+
+
+1.1.2 (2014-10-07)
+^^^^^^^^^^^^^^^^^^
+
+- Fixed identifier quoting in trigger syncing
+
+
+1.1.1 (2014-10-07)
+^^^^^^^^^^^^^^^^^^
+
+- Fixed native versioning trigger syncing
+
+
+1.1.0 (2014-10-02)
+^^^^^^^^^^^^^^^^^^
+
+- Added Python 3.4 to test suite
+- Added optional native trigger based versioning for PostgreSQL dialect
+- Added create_models option
+- Added count_versions utility function
+- Fixed custom transaction column name handling with models using joined table inheritance
+- Fixed subquery strategy support for models using joined table inheritance
+- Fixed savepoint handling
+- Fixed version model building when no versioned models were found (previously threw AttributeError)
+- Replaced plugin template methods before_create_tx_object and after_create_tx_object with transaction_args to better cope with native versioning
+
+
+1.0.3 (2014-07-16)
+^^^^^^^^^^^^^^^^^^
+
+- Added __repr__ for Operations class
+- Fixed an issue where assigning unmodified object's attributes in user defined before flush listener would raise TypeError in UnitOfWork
+
+
+1.0.2 (2014-07-11)
+^^^^^^^^^^^^^^^^^^
+
+- Allowed easier overriding of PropertyModTracker column creation
+- Rewrote join table inheritance handling schematics (now working with SA 0.9.6)
+- SQLAlchemy-Utils dependency updated to 0.26.5
+
+
+1.0.1 (2014-06-18)
+^^^^^^^^^^^^^^^^^^
+
+- Fixed an issue where deleting an object with deferred columns would throw ObjectDeletedError.
+- Made viewonly relationships with association tables not register the association table to versioning manager registry.
+
+
+1.0 (2014-06-16)
 ^^^^^^^^^^^^^^^^
+
+- Added __repr__ for Transaction class, issue #59
+- Made transaction_cls of VersioningManager configurable.
+- Removed generic relationships from transaction class to versioned classes.
+- Removed generic relationships from transaction changes class to versioned classes.
+- Removed relation_naming_function (no longer needed)
+- Moved get_bind to SQLAlchemy-Utils
+- Removed inflection package from dependencies (no longer needed)
+- SQLAlchemy-Utils dependency updated to 0.26.2
+
+
+1.0b5 (2014-05-07)
+^^^^^^^^^^^^^^^^^^
+
+- Added order_by mapper arg ignoring for version class reflection if other than string argument is used
+- Added support for customizing the User class which the Transaction class should have relationship to (issue #53)
+- Changed get_versioning_manager to throw ClassNotVersioned exception if first argument is not a versioned class
+- Fixed relationship reflection from versioned classes to non versioned classes (issue #52)
+- SQLAlchemy-Utils dependency updated to 0.25.4
+
+
+1.0-b4 (2014-04-20)
+^^^^^^^^^^^^^^^^^^^
+
+- Fixed many-to-many unit of work inspection when using engine bind instead of collection bind
+- Fixed various issues if primary key aliases were used in declarative models
+- Fixed an issue where association versioning would not work with custom transaction column name
+- SQLAlchemy-Utils dependency updated to 0.25.3
+
+
+1.0-b3 (2014-04-19)
+^^^^^^^^^^^^^^^^^^^
+
+- Added support for concrete inheritance
+- Added order_by mapper arg reflection to version classes
+- Added support for column_prefix mapper arg
+- Made model builder copy inheritance mapper args to version classes from parent classes
+- Fixed end transaction id setting for join table inheritance classes. Now end transaction id is set explicitly to all tables in inheritance hierarchy.
+- Fixed single table inheritance handling
+
+
+1.0-b2 (2014-04-09)
+^^^^^^^^^^^^^^^^^^^
+
+- Added some schema tools to help migrating between different plugins and versioning strategies
+- Added remove_versioning utility function, see issue #45
+- Added order_by transaction_id default to versions relationship
+- Fixed PropertyModTrackerPlugin association table handling.
+- Fixed get_bind schematics (Flask-SQLAlchemy integration wasn't working)
+- Fixed a bug where committing a session without objects would result in KeyError
+- SQLAlchemy dependency updated to 0.9.4
+
+
+1.0-b1 (2014-03-14)
+^^^^^^^^^^^^^^^^^^^
 
 - Added new plugin architecture
 - Added ActivityPlugin

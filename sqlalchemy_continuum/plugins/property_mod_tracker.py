@@ -24,25 +24,33 @@ from ..utils import versioned_column_properties
 class PropertyModTrackerPlugin(Plugin):
     column_suffix = '_mod'
 
+    def create_mod_column(self, column):
+        return sa.Column(
+            column.name + self.column_suffix,
+            sa.Boolean,
+            key=column.key + self.column_suffix,
+            default=False,
+            server_default=sa.sql.expression.false(),
+            nullable=False
+        )
+
     def after_build_version_table_columns(self, table_builder, columns):
-        for column in table_builder.parent_table.c:
-            if not table_builder.manager.is_excluded_column(
-                table_builder.model, column
-            ) and not column.primary_key:
-                columns.append(
-                    sa.Column(
-                        column.name + self.column_suffix,
-                        sa.Boolean,
-                        key=column.key + self.column_suffix,
-                        default=False,
-                        server_default=sa.sql.expression.false(),
-                        nullable=False
-                    )
-                )
+        # Only create modification tracking columns for tables that are
+        # associated with actual model classes. In other words do not create
+        # mod tracking columns for association tables.
+        if table_builder.model:
+            for column in table_builder.parent_table.c:
+                if not table_builder.manager.is_excluded_column(
+                    table_builder.model, column
+                ) and not column.primary_key:
+                    columns.append(self.create_mod_column(column))
 
     def after_create_version_object(self, uow, parent_obj, version_obj):
+        session = sa.orm.object_session(parent_obj)
+        is_deleted = parent_obj in session.deleted
+
         for prop in versioned_column_properties(parent_obj):
-            if has_changes(parent_obj, prop.key):
+            if has_changes(parent_obj, prop.key) or is_deleted:
                 setattr(
                     version_obj,
                     prop.key + self.column_suffix,

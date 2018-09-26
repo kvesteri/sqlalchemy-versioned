@@ -39,7 +39,7 @@ Validity
 
 The 'validity' strategy saves two columns in each history table, namely 'transaction_id' and 'end_transaction_id'. The names of these columns can be configured with configuration options `transaction_column_name` and `end_transaction_column_name`.
 
-As with 'subquery' strategy for each inserted, updated and deleted entity Continuum creates new version in the history table. However it also updates the end_transaction_id of the previous version to point at the current version. This creates a little be of overhead during data manipulation.
+As with 'subquery' strategy for each inserted, updated and deleted entity Continuum creates new version in the history table. However it also updates the end_transaction_id of the previous version to point at the current version. This creates a little bit of overhead during data manipulation.
 
 With 'validity' strategy version traversal is very fast. When accessing previous version Continuum tries to find the version record where the primary keys match and end_transaction_id is the same as the transaction_id of the given version record. When accessing the next version Continuum tries to find the version record where the primary keys match and transaction_id is the same as the end_transaction_id of the given version record.
 
@@ -73,23 +73,7 @@ Cons:
 Column exclusion and inclusion
 ------------------------------
 
-With `include` and `exclude` configuration options you can define which entity attributes you want to get versioned. By default Continuum versions all entity attributes except DateTime columns with default values. If you want to include this columns you have to pass them to `include`.
-
-
-::
-
-
-    class User(Base):
-        __versioned__ = {
-            'include': ['created_at']
-        }
-
-        id = sa.Column(sa.Integer, primary_key=True)
-        name = sa.Column(sa.Unicode(255))
-        created_at = sa.Column(sa.DateTime)
-
-
-Sometimes you may have columns you want to exclude from the history classes. You may pass the column names to `exclude` option as follows:
+With `exclude` configuration option you can define which entity attributes you want to get versioned. By default Continuum versions all entity attributes.
 
 ::
 
@@ -126,11 +110,6 @@ Here is a full list of configuration options:
 * operation_type_column_name (default: 'operation_type')
     The name of the operation type column (used by history tables).
 
-* relation_naming_function (default: lambda a: pluralize(underscore(a)))
-    The relation naming function that is being used for generating the relationship names between various generated models.
-
-    For example lets say you have versioned class called 'User'. By default Continuum builds relationship from TransactionLog with name 'users' that points to User class.
-
 * strategy (default: 'validity')
     The versioning strategy to use. Either 'validity' or 'subquery'
 
@@ -148,6 +127,27 @@ Example
         id = sa.Column(sa.Integer, primary_key=True, autoincrement=True)
         name = sa.Column(sa.Unicode(255))
         content = sa.Column(sa.UnicodeText)
+
+
+Customizing transaction user class
+----------------------------------
+
+By default Continuum tries to build a relationship between 'User' class and Transaction class. If you have differently named user class you can simply pass its name to make_versioned:
+
+
+::
+
+
+    make_versioned(user_cls='MyUserClass')
+
+
+
+If you don't want transactions to contain any user references you can also disable this feature.
+
+
+::
+
+    make_versioned(user_cls=None)
 
 
 Customizing versioned mappers

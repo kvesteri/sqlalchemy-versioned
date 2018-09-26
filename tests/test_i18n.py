@@ -1,9 +1,11 @@
 import sqlalchemy as sa
 from sqlalchemy_continuum import versioning_manager
 from sqlalchemy_i18n import Translatable, make_translatable, translation_base
+from sqlalchemy_utils import i18n
 from . import TestCase
 
 
+i18n.get_locale = lambda: 'en'
 make_translatable()
 
 
@@ -25,7 +27,10 @@ class TestVersioningWithI18nExtension(TestCase):
             }
             locale = 'en'
 
-            id = sa.Column(sa.Integer, autoincrement=True, primary_key=True)
+            kwargs = dict(primary_key=True)
+            if self.driver != 'sqlite':
+                kwargs['autoincrement'] = True
+            id = sa.Column(sa.Integer, **kwargs)
             description = sa.Column(sa.UnicodeText)
 
         class ArticleTranslation(translation_base(Article)):
@@ -67,10 +72,8 @@ class TestVersioningWithI18nExtension(TestCase):
         self.article.description = u'Some text'
         self.session.add(self.article)
 
-        with self.article.force_locale('fi'):
-            self.article.name = u'Text 1'
-        with self.article.force_locale('en'):
-            self.article.name = u'Text 2'
+        self.article.translations.fi.name = u'Text 1'
+        self.article.translations.en.name = u'Text 2'
 
         self.session.commit()
 

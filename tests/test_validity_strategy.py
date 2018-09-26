@@ -60,7 +60,7 @@ class TestJoinTableInheritanceWithValidityVersioning(TestCase):
             __tablename__ = 'text_item'
             __versioned__ = {
                 'base_classes': (self.Model, ),
-                'strategy': 'validity'
+                'strategy': 'validity',
             }
             id = sa.Column(sa.Integer, autoincrement=True, primary_key=True)
 
